@@ -48,16 +48,16 @@ int main(void) {
 	_Bool ch = 0;
 	initPeripherals();
 	for (;;) {
-		ADMUX = 1;	// PB2 ADC1
+		ADMUX = ADC1;	// PB2
 		channels.setpoint = singleADC();
 		
 		channels.no[ch].input = 0;
 		
-		// if PWM not in use, set ADC Noise Reduction as sleep mode. Idle otherwise
-		if (TCCR0A & 0xA0) cbi(MCUCR, SM0);
+		// if TIM0 not in use, set ADC Noise Reduction as sleep mode. Idle otherwise
+		if (TIM0_IN_USE) cbi(MCUCR, SM0);
 		else sbi(MCUCR, SM0);
 		
-		ADMUX = ADC_CH_OFFSET + ch;	// PB4, PB3
+		ADMUX = ADC2 + ch;	// PB4, PB3
 		for (uint8_t i = 0; i < 8; i++)
 			channels.no[ch].input += singleADC();
 		channels.no[ch].input >>= 3;

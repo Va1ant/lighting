@@ -18,6 +18,16 @@
 #define pinInvert(pin)		PORTB ^= (1 << pin)
 #define readPin(pin)		((PINB & (1 << pin)) ? 1 : 0)
 
-#define ADC_CH_OFFSET 2
+#ifndef ADC1
+#define ADC1 1
+#endif
+#ifndef ADC2
+#define ADC2 2
+#endif
+#ifndef ADC3
+#define ADC3 3
+#endif
+
+#define TIM0_IN_USE (TCCR0A & 0xA0)
 
 #endif
