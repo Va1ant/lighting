@@ -1,6 +1,4 @@
-﻿// adc in free running mode?
-
-#include <avr/io.h>
+﻿#include <avr/io.h>
 #include <avr/interrupt.h>
 #include "macro.h"
 
@@ -10,131 +8,108 @@
 #endif
 
 typedef struct {
+	uint16_t vals[3];
 	uint16_t input;
 	uint16_t prevInput;
 	int16_t integral;
 } channel_t;
 
-typedef struct {
-	uint16_t setpoint;
-	channel_t no[CHANNELS];
-} primary_t;
-
 // PID dividers
-const uint8_t Kp = 16;
-const uint8_t Ki = 8;
-const uint8_t Kd = 16;
+const uint8_t Kp = 128;
+const uint8_t Ki = 64;
+const uint8_t Kd = 64;
 
 const uint8_t _minOut = 0, _maxOut = 255;	// for 8-bit PWM
 
 static void initPeripherals(void);
 static void setPWM(uint8_t pin, uint8_t val);
 static uint16_t singleADC(void);
-static uint8_t getValByPID(primary_t *t, uint8_t ch);
+static uint8_t getValByPID(uint16_t setpoint, channel_t *ch);
 
 int main(void) {
-	primary_t channels;
+	channel_t channel[CHANNELS];
 	
-	channels.no[0].prevInput = 0;
-	channels.no[0].integral = 0;
+	channel[0].vals[1] = 0;
+	channel[0].vals[2] = 0;
+	channel[0].input = 0;
+	channel[0].prevInput = 0;
+	channel[0].integral = 0;
 	
 	#if (CHANNELS > 1)
-	channels.no[1].prevInput = 0;
-	channels.no[1].integral = 0;
+	channel[1].vals[1] = 0;
+	channel[1].vals[2] = 0;
+	channel[1].input = 0;
+	channel[1].prevInput = 0;
+	channel[1].integral = 0;
 	#else
 	const
 	#endif
 	
-	_Bool ch = 0;
+	_Bool n = 0;
+	uint8_t j = 3;
+	uint16_t sp = 0;
+	
 	initPeripherals();
 	for (;;) {
-		ADMUX = ADC1;	// PB2
-		channels.setpoint = singleADC();
-		
-		channels.no[ch].input = 0;
-		
-		// if TIM0 not in use, set ADC Noise Reduction as sleep mode. Idle otherwise
+		// set Idle as sleep mode if TIM0 in use, ADC Noise Reduction otherwise
 		if (TIM0_IN_USE) cbi(MCUCR, SM0);
 		else sbi(MCUCR, SM0);
 		
-		ADMUX = ADC2 + ch;	// PB4, PB3
-		for (uint8_t i = 0; i < 8; i++)
-			channels.no[ch].input += singleADC();
-		channels.no[ch].input >>= 3;
+		if (j > 2) {
+			ADMUX = (1 << MUX0);	// PB2
+			sp += (int16_t)(singleADC() - sp) / 3;
+			
+			j = 0;
+			#if (CHANNELS > 1)
+			n = !n;
+			#endif
+			
+			ADMUX = (1 << MUX1) | (n << MUX0);	// PB4, PB3
+		}
 		
-		setPWM(ch, getValByPID(&channels, ch));	// PB0, PB1
+		channel[n].vals[j] = singleADC();
+		uint16_t median = (max(channel[n].vals[0], channel[n].vals[1]) == 
+						max(channel[n].vals[1], channel[n].vals[2])) ? 
+						max(channel[n].vals[0], channel[n].vals[2]) : 
+						max(channel[n].vals[1], min(channel[n].vals[0], channel[n].vals[2]));
+		channel[n].input += (int16_t)(median - channel[n].input) / 3;
 		
-		#if (CHANNELS > 1)
-		ch = !ch;
-		#endif
+		setPWM(n, getValByPID(sp, &channel[n]));	// PB0, PB1
+		
+		j++;
 	}
 }
 
 static void initPeripherals(void)
 {
-	// set a2d prescaler so we are inside the desired 50-200 KHz range.
-	#if F_CPU >= 16000000 // 16 MHz / 128 = 125 KHz
-	sbi(ADCSRA, ADPS2);
-	sbi(ADCSRA, ADPS1);
-	sbi(ADCSRA, ADPS0);
-	#elif F_CPU >= 8000000 // 8 MHz / 64 = 125 KHz
-	sbi(ADCSRA, ADPS2);
-	sbi(ADCSRA, ADPS1);
-	cbi(ADCSRA, ADPS0);
-	#elif F_CPU >= 4000000 // 4 MHz / 32 = 125 KHz
-	sbi(ADCSRA, ADPS2);
-	cbi(ADCSRA, ADPS1);
-	sbi(ADCSRA, ADPS0);
-	#elif F_CPU >= 2000000 // 2 MHz / 16 = 125 KHz
-	sbi(ADCSRA, ADPS2);
-	cbi(ADCSRA, ADPS1);
-	cbi(ADCSRA, ADPS0);
-	#elif F_CPU >= 1000000 // 1 MHz / 8 = 125 KHz
-	cbi(ADCSRA, ADPS2);
-	sbi(ADCSRA, ADPS1);
-	sbi(ADCSRA, ADPS0);
-	#endif
+	// disabling comparator
+	ACSR |= (1 << ACD);
 	
 	// enable ADC & Conversion Complete Interrupt
-	sbi(ADCSRA, ADEN);
-	sbi(ADCSRA, ADIE);
-	
-	// disabling comparator
-	cbi(ACSR, ACD);
+	ADCSRA = (1 << ADEN) | (1 << ADIE) | (1 << ADPS1) | (1 << ADPS0);
 	
 	// disabling digital input buffer on ADC-used pins
-	sbi(DIDR0, ADC2D);
-	sbi(DIDR0, ADC3D);
+	DIDR0 = (1 << ADC3D) | (1 << ADC2D) | (1 << ADC1D);
 	
-	pinAsOutput(PB0);
-	pinAsOutput(PB1);
+	DDRB = (1 << PB1) | (1 << PB0);
 	
 	// fast pwm on timer 0
-	sbi(TCCR0A, WGM01);
-	sbi(TCCR0A, WGM00);
+	TCCR0A = (1 << WGM01) | (1 << WGM00);
 	
 	// start timer 0 with no prescaling
-	sbi(TCCR0B, CS00);
+	TCCR0B = (1 << CS00);
 	
 	sei();
 }
 
 // returns the result of single A2D conversion for previously selected channel
 static uint16_t singleADC(void)
-{	
-	// start the conversion
-// 	sbi(ADCSRA, ADSC);
-	
-	// ADSC is cleared when the conversion finishes
-// 	while (ADCSRA & (1 << ADSC));
-	
+{
 	// start the conversion during sleep mode to reduce noise induced from the CPU core and other I/O peripherals
 	sbi(MCUCR, SE);
 	asm("sleep");
 	cbi(MCUCR, SE);
 	
-	// ADC macro takes care of reading ADC register.
-	// avr-gcc implements the proper reading order: ADCL is read first.
 	return ADC;
 }
 
@@ -161,18 +136,17 @@ static void setPWM(uint8_t pin, uint8_t val)
 	}
 }
 
-static uint8_t getValByPID(primary_t *t, uint8_t ch) {
-	int16_t error = t->setpoint - t->no[ch].input;					// ошибка регулирования
-	int16_t delta_input = t->no[ch].prevInput - t->no[ch].input;	// изменение входного сигнала между вызовами функции
-	t->no[ch].prevInput = t->no[ch].input;
+static uint8_t getValByPID(uint16_t setpoint, channel_t *ch) {
+	int16_t error = setpoint - ch->input;				// ошибка регулирования
+	int16_t delta_input = ch->prevInput - ch->input;	// изменение входного сигнала между вызовами функции
+	ch->prevInput = ch->input;
 	
 	int16_t output = error / Kp;		// пропорциональая составляющая
 	output += delta_input / Kd;			// дифференциальная составляющая
 	
-	t->no[ch].integral += error / Ki;	// инт. сумма
-	// 	if (_mode) integral += delta_input / Kp;
-	t->no[ch].integral = constrain(t->no[ch].integral, _minOut, _maxOut);	// ограничиваем инт. сумму
-	output += t->no[ch].integral;					// интегральная составляющая
+	ch->integral += error / Ki;			// инт. сумма
+	ch->integral = constrain(ch->integral, _minOut, _maxOut);	// ограничиваем инт. сумму
+	output += ch->integral;				// интегральная составляющая
 	output = constrain(output, _minOut, _maxOut);	// ограничиваем выход
 	
 	return (uint8_t)output;
